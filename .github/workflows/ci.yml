@@ -31,3 +31,5 @@ jobs:
     with:
       upload-artifact: ${{ github.event_name == 'push' }}
       
+
+# kickstart: force workflow registration
