@@ -18,3 +18,5 @@ jobs:
       upload-artifact: true
       tag-name: "${{ github.ref_name }}"
       channel: "${{ github.ref_type == 'tag' && endsWith(github.ref_name, 'dev') && 'dev' || github.ref_type != 'tag' && 'dev' || 'prod' }}"
+
+# resume-kick
