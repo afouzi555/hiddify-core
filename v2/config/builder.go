@@ -54,6 +54,14 @@ const (
 	InboundDirectTag = "dns-in"
 )
 
+
+// activeServerExclude / activeServerExclude6 hold the resolved IP prefixes
+// (v4 /32, v6 /128) of the ACTIVE proxy outbound server, populated at config-build
+// time from the selected profile. Consumed by the TUN inbound so BOTH directions of
+// the server's traffic bypass the TUN (Option 2 — dynamic, no hardcoded IP).
+var activeServerExclude []netip.Prefix
+var activeServerExclude6 []netip.Prefix
+
 var (
 	OutboundMainDetour       = OutboundSelectTag
 	OutboundWARPConfigDetour = OutboundDirectFragmentTag
@@ -84,6 +92,17 @@ func BuildConfig(ctx context.Context, hopts *HiddifyOptions, inputOpt *ReadOptio
 	// setNTP(&options)
 	if err := setOutbounds(&options, input, hopts, &staticIPs); err != nil {
 		return nil, err
+	}
+	// Option 2: apply the ACTIVE server route exclusion (captured in setOutbounds)
+	// to the TUN inbound so both outbound and return traffic bypass the TUN.
+	for i := range options.Inbounds {
+		if options.Inbounds[i].Tag == InboundTUNTag {
+			if opts, ok := options.Inbounds[i].Options.(*option.TunInboundOptions); ok {
+				opts.Inet4RouteExcludeAddress = activeServerExclude
+				opts.Inet6RouteExcludeAddress = activeServerExclude6
+			}
+			break
+		}
 	}
 	if err := setDns(&options, hopts, &staticIPs); err != nil {
 		return nil, err
@@ -127,6 +146,58 @@ func getHostnameIfNotIP(inp string) (string, error) {
 	return "", fmt.Errorf("not a hostname: %s", inp)
 }
 
+
+// captureActiveServerExclude resolves the ACTIVE proxy outbound server's endpoint
+// from the selected profile and stores /32 + /128 prefixes in activeServerExclude[6].
+// Called at config-build time (Start); dynamic — no hardcoded IP.
+func captureActiveServerExclude(input *option.Options) {
+	activeServerExclude = nil
+	activeServerExclude6 = nil
+	for _, out := range input.Outbounds {
+		if contains(PredefinedOutboundTags, out.Tag) {
+			continue
+		}
+		if contains([]string{"direct §hide§", "bypass §hide§", "block §hide§"}, out.Tag) {
+			continue
+		}
+		var server string
+		switch v := out.Options.(type) {
+		case *option.VLESSOutboundOptions:
+			server = v.Server
+		case *option.VMessOutboundOptions:
+			server = v.Server
+		case *option.TrojanOutboundOptions:
+			server = v.Server
+		case *option.ShadowsocksOutboundOptions:
+			server = v.Server
+		}
+		if server == "" {
+			continue
+		}
+		host := strings.TrimPrefix(strings.TrimPrefix(server, "http://"), "https://")
+		if ip := net.ParseIP(host); ip != nil {
+			if ip.To4() != nil {
+				activeServerExclude = append(activeServerExclude, netip.PrefixFrom(netip.MustParseAddr(ip.String()), 32))
+			} else {
+				activeServerExclude6 = append(activeServerExclude6, netip.PrefixFrom(netip.MustParseAddr(ip.String()), 128))
+			}
+			continue
+		}
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			if ip.To4() != nil {
+				activeServerExclude = append(activeServerExclude, netip.PrefixFrom(netip.MustParseAddr(ip.String()), 32))
+			} else {
+				activeServerExclude6 = append(activeServerExclude6, netip.PrefixFrom(netip.MustParseAddr(ip.String()), 128))
+			}
+		}
+		break
+	}
+}
+
 func setOutbounds(options *option.Options, input *option.Options, opt *HiddifyOptions, staticIPs *map[string][]string) error {
 	var outbounds []option.Outbound
 	var endpoints []option.Endpoint
@@ -134,6 +205,8 @@ func setOutbounds(options *option.Options, input *option.Options, opt *HiddifyOp
 	// OutboundMainProxyTag = OutboundSelectTag
 	// inbound==warp over proxies
 	// outbound==proxies over warp
+	captureActiveServerExclude(input)
+
 	OutboundMainDetour = OutboundSelectTag
 	OutboundWARPConfigDetour = OutboundDirectFragmentTag
 	hasPsiphon := false
@@ -472,7 +545,6 @@ func setInbound(options *option.Options, hopt *HiddifyOptions) {
 		if ipv6Enable {
 			opts.Address = append(opts.Address, netip.MustParsePrefix("fdfe:dcba:9876::1/126"))
 		}
-
 		options.Inbounds = append(options.Inbounds, tunInbound)
 
 	}
