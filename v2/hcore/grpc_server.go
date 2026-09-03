@@ -53,9 +53,42 @@ func Setup(params *SetupRequest, platformInterface libbox.PlatformInterface) err
 		Log(LogLevel_WARNING, LogType_CORE, "grpcServer already started")
 		return nil
 	}
-	static.BaseContext = libbox.BaseContext(platformInterface)
+	// BUG FIX (2026-09-03): static.BaseContext / static.globalPlatformInterface
+	// are process-wide globals, but Setup() is called from MULTIPLE independent
+	// places with DIFFERENT "mode" values that do not collide in the
+	// grpcServer[mode] map above -- so the early-return guard right above this
+	// does NOT stop a second, unrelated Setup() call from reaching this point.
+	// Concretely: hiddify-app's Flutter layer calls Setup() once per app-launch
+	// with mode=3 and platformInterface=nil (MethodHandler.kt's "setup" method
+	// channel handler, used only to bring up the internal gRPC "hello" plumbing
+	// -- see lib/hiddifycore/hiddify_core_service.dart's core.setup(..., 3) and
+	// MethodHandler.kt's Mobile.setup(options, null) call). Separately,
+	// BoxService.kt calls Setup() with mode=4 and the REAL VpnService-backed
+	// platformInterface when the user actually presses Connect. Because both
+	// calls write the SAME globals unconditionally, whichever call reaches this
+	// line LAST wins -- and a nil-interface mode=3 call has no reason to ever
+	// come after the real mode=4 one to preserve it. When it does (app restart,
+	// hot reload, or any path that re-runs the mode=3 setup after a connect),
+	// static.globalPlatformInterface silently reverts to a nil-backed gomobile
+	// proxy. Sing-box then falls back to its native (SELinux-blocked) netlink
+	// interface monitor AND every later Go->Java PlatformInterface call
+	// (GetInterfaces / OpenTun / AutoDetectInterfaceControl -- whichever fires
+	// first) aborts natively with "Unknown reference: N", since the JNI seq
+	// table never tracked a real Java object for it in the first place.
+	// Reproduced on a OnePlus Nord 5G; the specific crashing call varies run to
+	// run because it is purely a function of Go-routine scheduling, not a bug
+	// in any one PlatformInterface method.
+	// Fix: never let a nil platformInterface clobber an already-registered
+	// real one. A nil interface is only ever meaningful the first time (before
+	// any real VPN session has started); once a real one is set, only another
+	// real one may replace it.
+	if platformInterface != nil || static.globalPlatformInterface == nil {
+		static.BaseContext = libbox.BaseContext(platformInterface)
+		static.globalPlatformInterface = platformInterface
+	} else {
+		Log(LogLevel_WARNING, LogType_CORE, "Setup() called with a nil platformInterface while a real one is already registered -- ignoring to avoid invalidating the active VPN session's platform interface")
+	}
 	static.debug = params.Debug
-	static.globalPlatformInterface = platformInterface
 	tcpConn := true // runtime.GOOS == "windows" // TODO add TVOS
 	libbox.Setup(
 		&libbox.SetupOptions{
