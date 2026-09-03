@@ -79,6 +79,7 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	defer config.DeferPanicToError("startmobile", func(recovered_err error) {
 		coreResponse, err = errorWrapper(MessageType_UNEXPECTED_ERROR, recovered_err)
 	})
+	hclog(10, "StartService() entered", fmt.Sprintf("globalPlatformInterface_is_nil=%v coreState=%v", static.globalPlatformInterface == nil, static.CoreState))
 	static.lock.Lock()
 	defer static.lock.Unlock()
 
@@ -100,8 +101,10 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	static.previousStartRequest = in
 	options, err := BuildConfig(ctx, in)
 	if err != nil {
+		hclog(11, "BuildConfig FAILED", err.Error())
 		return errorWrapper(MessageType_ERROR_BUILDING_CONFIG, err)
 	}
+	hclog(11, "BuildConfig OK, options built")
 	saveLastStartRequest(in)
 
 	Log(LogLevel_DEBUG, LogType_CORE, "Main Service pre start")
@@ -119,22 +122,30 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 		}
 		Log(LogLevel_INFO, LogType_CORE, "Current Config is:\n", string(pout))
 	}
+	hclog(12, "about to wrap+register platformInterface for this session", fmt.Sprintf("globalPlatformInterface_is_nil=%v", static.globalPlatformInterface == nil))
 	ctx = libbox.FromContext(ctx, static.globalPlatformInterface)
 	if static.globalPlatformInterface != nil {
 		platformWrapper := libbox.WrapPlatformInterface(static.globalPlatformInterface)
+		hclog(13, "platformWrapper built OK (UseProcFS() succeeded -- underlying Java ref was alive at this point)")
 		service.MustRegister[adapter.PlatformInterface](ctx, platformWrapper)
+		hclog(14, "platformWrapper registered into service registry")
 		// } else {
 		// 	service.MustRegister[adapter.PlatformInterface](ctx, (*adapter.PlatformInterface)nil)
+	} else {
+		hclog(13, "SKIPPED wrapping -- globalPlatformInterface is nil, native netlink fallback will be used")
 	}
 	Log(LogLevel_DEBUG, LogType_CORE, "Stating Service with delay ?", in.DelayStart)
 	if in.DelayStart {
 		<-time.After(1000 * time.Millisecond)
 	}
 	libbox.SetMemoryLimit(C.IsIos || !in.DisableMemoryLimit)
+	hclog(15, "about to call NewService() -- if step 16 never logs, the native crash is inside this call")
 	instance, err := NewService(ctx, *options)
 	if err != nil {
+		hclog(16, "NewService FAILED", err.Error())
 		return errorWrapper(MessageType_START_SERVICE, err)
 	}
+	hclog(16, "NewService() returned OK")
 	static.StartedService = instance
 	if static.debug {
 		dumpGoroutinesToFile(fmt.Sprint(sWorkingPath, "/data/goroutine-start.log"))
@@ -145,5 +156,6 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 		}
 	}
 
+	hclog(17, "StartService() completed normally, returning STARTED")
 	return SetCoreStatus(CoreStates_STARTED, MessageType_EMPTY, ""), nil
 }

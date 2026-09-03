@@ -37,11 +37,34 @@ type CoreService struct {
 	UnimplementedCoreServer
 }
 
+// Log group activation flag (see /Volumes/imac/tools_core/programming_logging.md).
+// bug: Nord 5G connect-tap -> native SIGABRT somewhere after Setup()/StartService();
+// this traces whether platformInterface is real or nil at each Setup() call, and
+// which "mode" is calling, to confirm/refute the clobber-race fixed in commit
+// 0cd8099. Investigated 2026-09-03.
+const LOG_HCORE_CONNECT = true
+
+func hclog(step int, desc string, value ...string) {
+	if !LOG_HCORE_CONNECT {
+		return
+	}
+	suffix := ""
+	if len(value) > 0 && value[0] != "" {
+		v := value[0]
+		if len(v) > 120 {
+			v = v[:120]
+		}
+		suffix = ": " + v
+	}
+	Log(LogLevel_WARNING, LogType_CORE, fmt.Sprintf("[log-hcore-connect] step %d -- %s%s", step, desc, suffix))
+}
+
 func Setup(params *SetupRequest, platformInterface libbox.PlatformInterface) error {
 	defer config.DeferPanicToError("setup", func(err error) {
 		Log(LogLevel_FATAL, LogType_CORE, err.Error())
 		<-time.After(5 * time.Second)
 	})
+	hclog(1, "Setup() entered", fmt.Sprintf("mode=%v platformInterface_is_nil=%v", params.Mode, platformInterface == nil))
 	if params.Debug {
 		go func() {
 			http.ListenAndServe("localhost:6060", nil)
@@ -50,9 +73,11 @@ func Setup(params *SetupRequest, platformInterface libbox.PlatformInterface) err
 	mu.Lock()
 	defer mu.Unlock()
 	if grpcServer[params.Mode] != nil {
+		hclog(2, "EARLY RETURN -- grpcServer already started for this mode", fmt.Sprintf("mode=%v", params.Mode))
 		Log(LogLevel_WARNING, LogType_CORE, "grpcServer already started")
 		return nil
 	}
+	hclog(2, "grpcServer[mode] guard passed, continuing", fmt.Sprintf("mode=%v", params.Mode))
 	// BUG FIX (2026-09-03): static.BaseContext / static.globalPlatformInterface
 	// are process-wide globals, but Setup() is called from MULTIPLE independent
 	// places with DIFFERENT "mode" values that do not collide in the
@@ -83,9 +108,11 @@ func Setup(params *SetupRequest, platformInterface libbox.PlatformInterface) err
 	// any real VPN session has started); once a real one is set, only another
 	// real one may replace it.
 	if platformInterface != nil || static.globalPlatformInterface == nil {
+		hclog(3, "REGISTERING platformInterface into static globals", fmt.Sprintf("mode=%v incoming_nil=%v previous_was_nil=%v", params.Mode, platformInterface == nil, static.globalPlatformInterface == nil))
 		static.BaseContext = libbox.BaseContext(platformInterface)
 		static.globalPlatformInterface = platformInterface
 	} else {
+		hclog(3, "SKIPPED registering -- nil incoming platformInterface would have clobbered a real one", fmt.Sprintf("mode=%v", params.Mode))
 		Log(LogLevel_WARNING, LogType_CORE, "Setup() called with a nil platformInterface while a real one is already registered -- ignoring to avoid invalidating the active VPN session's platform interface")
 	}
 	static.debug = params.Debug
