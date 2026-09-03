@@ -44,8 +44,24 @@ func Setup(opt *SetupOptions, platformInterface libbox.PlatformInterface) error 
 // 	return state, err
 // }
 
+// BUG FIX (2026-09-03): this used to build a FRESH context via
+// libbox.BaseContext(nil) -- discarding the platform interface that Setup()
+// already wired up and stored in hcore's own base context. A nil platform
+// interface makes sing-box's NetworkManager fall back to its native
+// Linux netlink-based interface monitor instead of delegating to Kotlin's
+// PlatformInterfaceWrapper (see route/network.go's
+// usePlatformDefaultInterfaceMonitor := nm.platformInterface != nil check).
+// Android's SELinux policy for untrusted_app blocks raw netlink route
+// sockets, so that fallback crashes the whole process with a native SIGABRT
+// (avc: denied bind ... tclass=netlink_route_socket, then gomobile's
+// go/Seq: Unknown reference: N) the moment a connection is started --
+// reproduced consistently on a OnePlus Nord 5G, which generates enough
+// network-change churn to hit this path reliably; not reproduced on a
+// lower-churn test device, which is presumably why this went unnoticed.
+// hcore.GetBaseContext() reuses the context Setup() already built with the
+// real platform interface embedded, instead of discarding it here.
 func Start(configPath string, configContent string) error {
-	_, err := hcore.StartService(libbox.BaseContext(nil), &hcore.StartRequest{
+	_, err := hcore.StartService(hcore.GetBaseContext(), &hcore.StartRequest{
 		ConfigPath:    configPath,
 		ConfigContent: configContent,
 	})

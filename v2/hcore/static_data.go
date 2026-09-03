@@ -42,3 +42,18 @@ var static = &HiddifyInstance{
 	outboundsInfoObserver:     monitoring.NewBroadcaster[*OutboundGroupList](context.Background()),
 	mainOutboundsInfoObserver: monitoring.NewBroadcaster[*OutboundGroupList](context.Background()),
 }
+
+// GetBaseContext returns the process-wide base context configured by Setup(),
+// which has the platform interface (libbox.BaseContext(platformInterface))
+// already embedded. Any code that starts a sing-box service after Setup() has
+// run MUST use this context rather than building a fresh libbox.BaseContext(nil)
+// -- a nil platform interface causes sing-box's NetworkManager to fall back to
+// its native Linux netlink-based interface monitor (nm.platformInterface !=
+// nil check in route/network.go), which Android's SELinux policy for
+// untrusted_app blocks (avc: denied { bind } ... tclass=netlink_route_socket),
+// crashing the whole process with a native SIGABRT the moment a connection is
+// started. See platform/mobile/mobile.go's Start() for the caller-side half of
+// this fix (2026-09-03).
+func GetBaseContext() context.Context {
+	return static.BaseContext
+}
