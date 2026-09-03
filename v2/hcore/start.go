@@ -138,6 +138,7 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	if in.DelayStart {
 		<-time.After(1000 * time.Millisecond)
 	}
+	hclog(18, "about to call libbox.SetMemoryLimit()", fmt.Sprintf("in.DisableMemoryLimit=%v effective_enabled=%v", in.DisableMemoryLimit, C.IsIos || !in.DisableMemoryLimit))
 	libbox.SetMemoryLimit(C.IsIos || !in.DisableMemoryLimit)
 	hclog(15, "about to call NewService() -- if step 16 never logs, the native crash is inside this call")
 	instance, err := NewService(ctx, *options)
