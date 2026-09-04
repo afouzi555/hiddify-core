@@ -159,6 +159,18 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 		hclog(13, "platformWrapper built OK (UseProcFS() succeeded -- underlying Java ref was alive at this point)")
 		service.MustRegister[adapter.PlatformInterface](ctx, platformWrapper)
 		hclog(14, "platformWrapper registered into service registry")
+		// D158 -- REAL FIX, found from D157's own GC-stats evidence: the previous anchor
+		// (D155, static.RunningServiceContext = ctx set only AFTER NewService() returns) was
+		// too late. D157's device test showed the "Unknown reference: 42" abort firing on a
+		// background thread (AutoDetectInterfaceControl's async monitor) ~490ms INTO
+		// NewService()'s own execution -- 38ms *before* NewService() even returned -- with 5
+		// GC cycles (3 of them forced) landing in that exact window (NumGC 13 -> 18). D155's
+		// anchor didn't exist yet at that point, so it protected nothing. Move the anchor to
+		// immediately after registration instead, so ctx (and therefore platformWrapper,
+		// reachable through the registry it's registered into) is pinned for Go's GC from the
+		// moment the platform interface is registered, covering NewService()'s own
+		// construction as well as the running tunnel's lifetime -- not just the latter.
+		static.RunningServiceContext = ctx
 		hclogGCStats(141, "gc-stats after platformWrapper registered")
 		// } else {
 		// 	service.MustRegister[adapter.PlatformInterface](ctx, (*adapter.PlatformInterface)nil)
@@ -176,6 +188,7 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	instance, err := NewService(ctx, *options)
 	if err != nil {
 		hclog(16, "NewService FAILED", err.Error())
+		static.RunningServiceContext = nil // D158 -- don't leave a stale anchor from a failed start
 		return errorWrapper(MessageType_START_SERVICE, err)
 	}
 	hclog(16, "NewService() returned OK")
@@ -208,6 +221,11 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	//
 	// Fix: retain ctx itself for as long as the service runs (cleared in Stop(), stop.go),
 	// so the registry and everything registered in it stay reachable the whole time.
+	// D158 -- static.RunningServiceContext is now set right after registration (see the
+	// D158 comment above, right after step 14) instead of here, so it also covers
+	// NewService()'s own execution. Left assigned to ctx again here too (harmless, ctx is
+	// the same value) purely so a reader scanning forward from static.StartedService still
+	// sees the anchor being maintained at this point.
 	static.RunningServiceContext = ctx
 
 	// D157 -- poll GC stats several times through the exact async window (StartService()
