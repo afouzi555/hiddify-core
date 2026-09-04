@@ -14,7 +14,14 @@ import (
 
 type HiddifyInstance struct {
 	StartedService *daemon.StartedService
-	HiddifyOptions *config.HiddifyOptions
+	// D155 -- see the comment on this field's assignment in start.go for the full root-cause
+	// chain. Retains the exact context.Context passed to NewService() for as long as the
+	// service is running, so the sing-box service.Registry (and therefore the wrapped
+	// libbox.PlatformInterface registered into it) stays reachable to Go's own garbage
+	// collector -- closing a real reachability gap that let the platform interface's
+	// baseline gomobile/JNI reference get released mid-session.
+	RunningServiceContext context.Context
+	HiddifyOptions        *config.HiddifyOptions
 	// activeConfigPath string
 	CoreLogFactory            log.Factory
 	coreInfoObserver          *monitoring.Broadcaster[*CoreInfoResponse]

@@ -148,6 +148,34 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	}
 	hclog(16, "NewService() returned OK")
 	static.StartedService = instance
+	// D155 -- REAL ROOT CAUSE, found by reading gomobile's own reference-counting source
+	// directly (github.com/sagernet/gomobile bind/java/Seq.java + bind/java/seq_android.c.support)
+	// after 5 prior targeted fixes (DefaultNetworkMonitor break, mobile.go context reuse,
+	// Setup() clobber guard, aggressive-memory-limit default) each genuinely fixed a real bug
+	// but none stopped the Nord 5G crash -- the exact "Unknown reference: N" abort kept
+	// recurring with the SAME refnum (42 -- Seq.java's REF_OFFSET, i.e. always the very
+	// first Java object registered in a session: the platform interface itself) at a
+	// DIFFERENT PlatformInterface method each time (GetInterfaces, then OpenTun, then
+	// AutoDetectInterfaceControl), regardless of the fix applied.
+	//
+	// The mechanism: every Go->Java call through a refnum does a temporary, balanced
+	// increment+decrement around that one call (seq_android.c.support's go_seq_from_refnum,
+	// "Go incremented the reference count just before passing the refnum. Decrement it
+	// here."). The BASELINE hold from the original Mobile.setup() registration is separate,
+	// and depends on something on the Go side keeping the wrapped platformInterface
+	// (platformWrapper, built via libbox.WrapPlatformInterface() above and registered into
+	// ctx's service.Registry) REACHABLE for Go's own garbage collector. ctx here was a
+	// local variable, going out of scope the moment StartService() returned; nothing else
+	// in this function chain kept the registry (and therefore platformWrapper) pinned for
+	// the actual, asynchronous lifetime of the running VPN tunnel. Whenever Go's GC next
+	// ran a cycle -- unrelated to memory limits, purely whenever it happened to run -- it
+	// found platformWrapper unreachable, collected it, and its finalizer released the
+	// baseline JNI reference for refnum 42. The next PlatformInterface call afterward --
+	// whichever one happened to be next -- aborted with "Unknown reference: 42".
+	//
+	// Fix: retain ctx itself for as long as the service runs (cleared in Stop(), stop.go),
+	// so the registry and everything registered in it stay reachable the whole time.
+	static.RunningServiceContext = ctx
 	if static.debug {
 		dumpGoroutinesToFile(fmt.Sprint(sWorkingPath, "/data/goroutine-start.log"))
 	}

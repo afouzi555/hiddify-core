@@ -34,11 +34,13 @@ func Stop() (coreResponse *CoreInfoResponse, err error) {
 
 	if err := ss.CloseService(); err != nil {
 		static.StartedService = nil
+		static.RunningServiceContext = nil // D155 -- release alongside StartedService, see start.go
 		dumpGoroutinesToFile(fmt.Sprint(sWorkingPath, "/data/goroutine-stop.log"))
 		return errorWrapper(MessageType_UNEXPECTED_ERROR, err)
 	}
 	// err = common.Close(static.StartedService)
 	static.StartedService = nil
+	static.RunningServiceContext = nil // D155 -- release alongside StartedService, see start.go
 
 	return SetCoreStatus(CoreStates_STOPPED, MessageType_EMPTY, ""), nil
 }
