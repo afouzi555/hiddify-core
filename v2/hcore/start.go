@@ -194,6 +194,25 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	hclog(16, "NewService() returned OK")
 	hclogGCStats(161, "gc-stats after NewService() returned")
 	static.StartedService = instance
+	// ============================================================================
+	// STATUS UPDATE (read this before trusting the theory below): D155's anchor was
+	// moved earlier by D158 (see the comment right after step 14, above) on the theory
+	// explained in this block. D158 was DEVICE-TESTED and the crash still occurred --
+	// this means the GC-reachability-gap theory below, while a real and correctly-
+	// understood mechanism (confirmed via gomobile source + real GC-timing device
+	// evidence, D157), is NOT the complete explanation for the Nord 5G crash. A separate
+	// comparison test (installing NekoBox for Android, an independent sing-box/gomobile
+	// client, on the same device with the same profile -- it connected fine, zero crash)
+	// proved the real bug is something Hiddify's own sing-box/gomobile integration does
+	// differently from a normal single-Setup()-call client, not a gomobile defect this
+	// retention fix could ever have addressed. Full evidence trail:
+	// OPTIMUS_VPN_SECURITY_PRIVACY_DOC.md sections 9.4.3 (D157 evidence), 9.4.4 (D158's
+	// disproof), 9.4.5 (the NekoBox comparison + correction), section 10 (methodology
+	// lessons from this whole arc). This code is left in place -- it's a real, correct
+	// fix for the mechanism it addresses, doesn't hurt anything, and may matter again if
+	// that mechanism ever independently resurfaces -- but do not assume it, by itself,
+	// is why any future Nord-5G Connect attempt does or doesn't crash.
+	// ============================================================================
 	// D155 -- REAL ROOT CAUSE, found by reading gomobile's own reference-counting source
 	// directly (github.com/sagernet/gomobile bind/java/Seq.java + bind/java/seq_android.c.support)
 	// after 5 prior targeted fixes (DefaultNetworkMonitor break, mobile.go context reuse,
